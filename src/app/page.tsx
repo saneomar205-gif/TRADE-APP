@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
-import { io, Socket } from 'socket.io-client'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   TrendingUp, TrendingDown, Activity, Volume2, VolumeX,
@@ -103,7 +102,6 @@ function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) 
   const isLong = signal.direction === 'LONG'
   const isProfit = signal.status === 'hit_target'
   const isLoss = signal.status === 'hit_stop'
-  const isActive = signal.status === 'active'
   const asset = assetConfig[signal.assetType]
 
   return (
@@ -234,7 +232,7 @@ function StatsBar({ stats }: { stats: Stats | null }) {
         <CardContent className="p-4">
           <div className="flex items-center gap-2 mb-1">
             <BarChart3 className="w-4 h-4 text-profit" />
-            <span className="text-xs text-muted-foreground">Taux de Reussite</span>
+            <span className="text-xs text-muted-foreground">Taux de Réussite</span>
           </div>
           <div className="text-2xl font-bold text-profit">{stats.winRate}%</div>
           <Progress value={stats.winRate} className="mt-1 h-1.5 bg-muted" />
@@ -376,7 +374,7 @@ function FilterPanel({
         onClick={() => setFilters({ assetType: '', direction: '', expert: '', status: 'all' })}
       >
         <RefreshCw className="w-3 h-3 mr-1.5" />
-        Reinitialiser les filtres
+        Réinitialiser les filtres
       </Button>
     </div>
   )
@@ -426,7 +424,7 @@ function AssetBreakdown({ stats }: { stats: Stats | null }) {
     <div className="space-y-3">
       <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
         <Globe className="w-4 h-4 text-primary" />
-        Repartition par Actif
+        Répartition par Actif
       </h3>
       <div className="space-y-3">
         {Object.entries(assetConfig).map(([key, config]) => {
@@ -452,78 +450,115 @@ function AssetBreakdown({ stats }: { stats: Stats | null }) {
 
 // ===== MAIN PAGE =====
 export default function TradingDashboard() {
-  const socketRef = useRef<Socket | null>(null)
-  const [isConnected, setIsConnected] = useState(false)
   const [signals, setSignals] = useState<TradeSignal[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [experts, setExperts] = useState<Expert[]>([])
+  const [isConnected, setIsConnected] = useState(false)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [filters, setFilters] = useState({ assetType: '', direction: '', expert: '', status: 'all' })
   const [newSignalIds, setNewSignalIds] = useState<Set<string>>(new Set())
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const signalsEndRef = useRef<HTMLDivElement>(null)
+  const lastFetchRef = useRef<string>('')
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Connect to WebSocket
-  useEffect(() => {
-    // DO NOT change the path, it is used by Caddy to forward the request to the correct port
-    const socketInstance = io('/?XTransformPort=3003', {
-      transports: ['websocket', 'polling'],
-      forceNew: true,
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 2000,
-      timeout: 10000,
-    })
-
-    socketRef.current = socketInstance
-
-    socketInstance.on('connect', () => {
-      console.log('Connected to trading signals server')
-      setIsConnected(true)
-    })
-
-    socketInstance.on('disconnect', () => {
-      setIsConnected(false)
-    })
-
-    socketInstance.on('signals-history', (data: TradeSignal[]) => {
-      setSignals(data)
-    })
-
-    socketInstance.on('new-signal', (signal: TradeSignal) => {
-      setSignals(prev => [signal, ...prev])
-      setNewSignalIds(prev => new Set(prev).add(signal.id))
-      if (soundEnabled) {
-        playAlertSound()
+  // Fetch signals from API
+  const fetchSignals = useCallback(async () => {
+    try {
+      const params = new URLSearchParams()
+      if (lastFetchRef.current) {
+        params.set('after', lastFetchRef.current)
       }
-      // Remove "new" flag after animation
-      setTimeout(() => {
-        setNewSignalIds(prev => {
-          const next = new Set(prev)
-          next.delete(signal.id)
-          return next
+      if (filters.assetType) params.set('assetType', filters.assetType)
+      if (filters.direction) params.set('direction', filters.direction)
+      if (filters.expert && filters.expert !== 'all') params.set('expert', filters.expert)
+      if (filters.status && filters.status !== 'all') params.set('status', filters.status)
+
+      const res = await fetch(`/api/signals?${params.toString()}`)
+      if (!res.ok) throw new Error('Failed to fetch')
+      
+      const data = await res.json()
+      setIsConnected(true)
+
+      if (data.signals && data.signals.length > 0) {
+        const newIds = data.signals
+          .filter((s: TradeSignal) => !signals.find(existing => existing.id === s.id))
+          .map((s: TradeSignal) => s.id)
+
+        if (newIds.length > 0 && lastFetchRef.current) {
+          // Only play sound for truly new signals (not initial load)
+          if (soundEnabled) playAlertSound()
+          setNewSignalIds(prev => {
+            const next = new Set(prev)
+            newIds.forEach((id: string) => next.add(id))
+            return next
+          })
+          setTimeout(() => {
+            setNewSignalIds(prev => {
+              const next = new Set(prev)
+              newIds.forEach((id: string) => next.delete(id))
+              return next
+            })
+          }, 2000)
+        }
+
+        setSignals(prev => {
+          const merged = [...data.signals, ...prev]
+          const unique = new Map(merged.map((s: TradeSignal) => [s.id, s]))
+          return Array.from(unique.values())
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+            .slice(0, 100)
         })
-      }, 2000)
-    })
+      }
 
-    socketInstance.on('signal-updated', (updated: TradeSignal) => {
-      setSignals(prev => prev.map(s => s.id === updated.id ? updated : s))
-    })
+      lastFetchRef.current = data.timestamp || new Date().toISOString()
+    } catch {
+      setIsConnected(false)
+    }
+  }, [filters, signals, soundEnabled])
 
-    socketInstance.on('stats', (data: Stats) => {
-      setStats(data)
-    })
+  // Fetch stats
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/stats')
+      if (res.ok) {
+        const data = await res.json()
+        setStats(data)
+      }
+    } catch {}
+  }, [])
 
-    socketInstance.on('experts', (data: Expert[]) => {
-      setExperts(data)
-    })
+  // Fetch experts
+  useEffect(() => {
+    fetch('/api/experts')
+      .then(res => res.json())
+      .then(data => setExperts(data))
+      .catch(() => {})
+  }, [])
+
+  // Initial load and polling
+  useEffect(() => {
+    fetchSignals()
+    fetchStats()
+
+    // Poll every 5 seconds
+    intervalRef.current = setInterval(() => {
+      fetchSignals()
+      fetchStats()
+    }, 5000)
 
     return () => {
-      socketInstance.disconnect()
+      if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [soundEnabled])
+  }, [fetchSignals, fetchStats])
 
-  // Filter signals
+  // Re-fetch when filters change
+  useEffect(() => {
+    lastFetchRef.current = ''
+    setSignals([])
+    fetchSignals()
+  }, [filters, fetchSignals])
+
+  // Filter signals client-side as well
   const filteredSignals = signals.filter(s => {
     if (filters.assetType && s.assetType !== filters.assetType) return false
     if (filters.direction && s.direction !== filters.direction) return false
@@ -554,13 +589,13 @@ export default function TradingDashboard() {
               <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
                 <SheetTrigger asChild>
                   <Button variant="ghost" size="icon" className="md:hidden">
-                                    <Menu className="w-5 h-5" />
-                                  </Button>
-                                </SheetTrigger>
-                                <SheetContent side="left" className="w-80 bg-card border-border p-4 custom-scrollbar overflow-y-auto">
-                                  {sidebarContent}
-                                </SheetContent>
-                              </Sheet>
+                    <Menu className="w-5 h-5" />
+                  </Button>
+                </SheetTrigger>
+                <SheetContent side="left" className="w-80 bg-card border-border p-4 custom-scrollbar overflow-y-auto">
+                  {sidebarContent}
+                </SheetContent>
+              </Sheet>
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-primary/20 flex items-center justify-center">
                   <Activity className="w-5 h-5 text-primary" />
