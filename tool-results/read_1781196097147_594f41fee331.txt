@@ -1,0 +1,705 @@
+     1→     1→'use client'
+     2→     2→
+     3→     3→import { useEffect, useState, useRef, useCallback } from 'react'
+     4→     4→import { io, Socket } from 'socket.io-client'
+     5→     5→import { motion, AnimatePresence } from 'framer-motion'
+     6→     6→import {
+     7→     7→  TrendingUp, TrendingDown, Activity, Volume2, VolumeX,
+     8→     8→  Filter, RefreshCw, Clock, Star, Zap, BarChart3,
+     9→     9→  ChevronDown, Search, Bell, BellOff, Globe, Bitcoin,
+    10→    10→  DollarSign, Landmark, Gem, X, CheckCircle2, XCircle,
+    11→    11→  ArrowUpRight, ArrowDownRight, Wifi, WifiOff, Menu
+    12→    12→} from 'lucide-react'
+    13→    13→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+    14→    14→import { Button } from '@/components/ui/button'
+    15→    15→import { Badge } from '@/components/ui/badge'
+    16→    16→import { ScrollArea } from '@/components/ui/scroll-area'
+    17→    17→import { Progress } from '@/components/ui/progress'
+    18→    18→import { Separator } from '@/components/ui/separator'
+    19→    19→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    20→    20→import { Toggle } from '@/components/ui/toggle'
+    21→    21→import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+    22→    22→
+    23→    23→// Types
+    24→    24→interface TradeSignal {
+    25→    25→  id: string
+    26→    26→  expertName: string
+    27→    27→  expertAvatar: string
+    28→    28→  expertRating: number
+    29→    29→  assetType: 'crypto' | 'forex' | 'stocks' | 'commodities'
+    30→    30→  symbol: string
+    31→    31→  direction: 'LONG' | 'SHORT'
+    32→    32→  entryPrice: number
+    33→    33→  targetPrice: number
+    34→    34→  stopLoss: number
+    35→    35→  confidence: number
+    36→    36→  timestamp: string
+    37→    37→  analysis: string
+    38→    38→  pnl?: number
+    39→    39→  status: 'active' | 'hit_target' | 'hit_stop' | 'closed'
+    40→    40→}
+    41→    41→
+    42→    42→interface Expert {
+    43→    43→  name: string
+    44→    44→  avatar: string
+    45→    45→  rating: number
+    46→    46→  specialty: string[]
+    47→    47→  winRate: number
+    48→    48→  totalTrades: number
+    49→    49→}
+    50→    50→
+    51→    51→interface Stats {
+    52→    52→  totalSignals: number
+    53→    53→  activeSignals: number
+    54→    54→  winRate: number
+    55→    55→  totalPnl: number
+    56→    56→  avgConfidence: number
+    57→    57→  byAsset: {
+    58→    58→    crypto: number
+    59→    59→    forex: number
+    60→    60→    stocks: number
+    61→    61→    commodities: number
+    62→    62→  }
+    63→    63→}
+    64→    64→
+    65→    65→// Asset type config
+    66→    66→const assetConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
+    67→    67→  crypto: { label: 'Crypto', icon: <Bitcoin className="w-4 h-4" />, color: 'text-[var(--crypto)]' },
+    68→    68→  forex: { label: 'Forex', icon: <DollarSign className="w-4 h-4" />, color: 'text-[var(--forex)]' },
+    69→    69→  stocks: { label: 'Actions', icon: <Landmark className="w-4 h-4" />, color: 'text-[var(--stocks)]' },
+    70→    70→  commodities: { label: 'Mat. Prem.', icon: <Gem className="w-4 h-4" />, color: 'text-[var(--commodities)]' },
+    71→    71→}
+    72→    72→
+    73→    73→// Sound effect generator
+    74→    74→function playAlertSound() {
+    75→    75→  try {
+    76→    76→    const ctx = new AudioContext()
+    77→    77→    const osc = ctx.createOscillator()
+    78→    78→    const gain = ctx.createGain()
+    79→    79→    osc.connect(gain)
+    80→    80→    gain.connect(ctx.destination)
+    81→    81→    osc.frequency.setValueAtTime(880, ctx.currentTime)
+    82→    82→    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.15)
+    83→    83→    gain.gain.setValueAtTime(0.15, ctx.currentTime)
+    84→    84→    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
+    85→    85→    osc.start(ctx.currentTime)
+    86→    86→    osc.stop(ctx.currentTime + 0.3)
+    87→    87→  } catch {}
+    88→    88→}
+    89→    89→
+    90→    90→// Time ago formatter
+    91→    91→function timeAgo(dateStr: string): string {
+    92→    92→  const now = new Date()
+    93→    93→  const date = new Date(dateStr)
+    94→    94→  const diff = Math.floor((now.getTime() - date.getTime()) / 1000)
+    95→    95→  if (diff < 60) return `Il y a ${diff}s`
+    96→    96→  if (diff < 3600) return `Il y a ${Math.floor(diff / 60)}m`
+    97→    97→  if (diff < 86400) return `Il y a ${Math.floor(diff / 3600)}h`
+    98→    98→  return `Il y a ${Math.floor(diff / 86400)}j`
+    99→    99→}
+   100→   100→
+   101→   101→// ===== SIGNAL CARD =====
+   102→   102→function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) {
+   103→   103→  const isLong = signal.direction === 'LONG'
+   104→   104→  const isProfit = signal.status === 'hit_target'
+   105→   105→  const isLoss = signal.status === 'hit_stop'
+   106→   106→  const isActive = signal.status === 'active'
+   107→   107→  const asset = assetConfig[signal.assetType]
+   108→   108→
+   109→   109→  return (
+   110→   110→    <motion.div
+   111→   111→      initial={isNew ? { opacity: 0, y: -20, scale: 0.97 } : false}
+   112→   112→      animate={{ opacity: 1, y: 0, scale: 1 }}
+   113→   113→      transition={{ duration: 0.4, ease: 'easeOut' }}
+   114→   114→      className={`rounded-xl border transition-all ${
+   115→   115→        isProfit ? 'border-profit/30 profit-glow' : 
+   116→   116→        isLoss ? 'border-loss/30 loss-glow' : 
+   117→   117→        'border-border hover:border-primary/30'
+   118→   118→      } bg-card/80 backdrop-blur-sm`}
+   119→   119→    >
+   120→   120→      <div className="p-4">
+   121→   121→        {/* Header row */}
+   122→   122→        <div className="flex items-center justify-between mb-3">
+   123→   123→          <div className="flex items-center gap-2">
+   124→   124→            <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold ${
+   125→   125→              isLong ? 'bg-profit/15 text-profit' : 'bg-loss/15 text-loss'
+   126→   126→            }`}>
+   127→   127→              {signal.expertAvatar}
+   128→   128→            </div>
+   129→   129→            <div>
+   130→   130→              <div className="flex items-center gap-1.5">
+   131→   131→                <span className="text-sm font-semibold text-foreground">{signal.expertName}</span>
+   132→   132→                <div className="flex items-center gap-0.5">
+   133→   133→                  <Star className="w-3 h-3 text-yellow-500 fill-yellow-500" />
+   134→   134→                  <span className="text-xs text-muted-foreground">{signal.expertRating}</span>
+   135→   135→                </div>
+   136→   136→              </div>
+   137→   137→              <div className="flex items-center gap-1.5 mt-0.5">
+   138→   138→                <span className={`text-xs ${asset.color} flex items-center gap-1`}>
+   139→   139→                  {asset.icon}
+   140→   140→                  {asset.label}
+   141→   141→                </span>
+   142→   142→                <span className="text-xs text-muted-foreground">·</span>
+   143→   143→                <span className="text-xs text-muted-foreground">{timeAgo(signal.timestamp)}</span>
+   144→   144→              </div>
+   145→   145→            </div>
+   146→   146→          </div>
+   147→   147→          <div className="flex items-center gap-2">
+   148→   148→            {signal.status !== 'active' && (
+   149→   149→              <Badge variant="outline" className={`text-xs ${
+   150→   150→                isProfit ? 'border-profit/40 text-profit' : 'border-loss/40 text-loss'
+   151→   151→              }`}>
+   152→   152→                {isProfit ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
+   153→   153→                {isProfit ? 'Cible atteinte' : 'Stop touché'}
+   154→   154→              </Badge>
+   155→   155→            )}
+   156→   156→            <Badge className={`text-xs font-bold ${
+   157→   157→              isLong ? 'bg-profit/15 text-profit border-profit/30 hover:bg-profit/20' : 'bg-loss/15 text-loss border-loss/30 hover:bg-loss/20'
+   158→   158→            }`}>
+   159→   159→              {isLong ? <ArrowUpRight className="w-3 h-3 mr-1" /> : <ArrowDownRight className="w-3 h-3 mr-1" />}
+   160→   160→              {signal.direction}
+   161→   161→            </Badge>
+   162→   162→          </div>
+   163→   163→        </div>
+   164→   164→
+   165→   165→        {/* Symbol and price */}
+   166→   166→        <div className="flex items-center justify-between mb-3">
+   167→   167→          <div>
+   168→   168→            <span className="text-lg font-bold text-foreground">{signal.symbol}</span>
+   169→   169→          </div>
+   170→   170→          <div className="text-right">
+   171→   171→            <div className="text-xs text-muted-foreground">Entrée</div>
+   172→   172→            <div className="text-sm font-mono font-semibold text-foreground">{signal.entryPrice.toLocaleString()}</div>
+   173→   173→          </div>
+   174→   174→        </div>
+   175→   175→
+   176→   176→        {/* Target and Stop */}
+   177→   177→        <div className="grid grid-cols-2 gap-3 mb-3">
+   178→   178→          <div className={`rounded-lg p-2 ${isLong ? 'bg-profit/5' : 'bg-loss/5'}`}>
+   179→   179→            <div className="text-xs text-muted-foreground mb-0.5">Objectif</div>
+   180→   180→            <div className={`text-sm font-mono font-semibold ${isLong ? 'text-profit' : 'text-loss'}`}>
+   181→   181→              {signal.targetPrice.toLocaleString()}
+   182→   182→            </div>
+   183→   183→          </div>
+   184→   184→          <div className={`rounded-lg p-2 ${isLong ? 'bg-loss/5' : 'bg-profit/5'}`}>
+   185→   185→            <div className="text-xs text-muted-foreground mb-0.5">Stop Loss</div>
+   186→   186→            <div className={`text-sm font-mono font-semibold ${isLong ? 'text-loss' : 'text-profit'}`}>
+   187→   187→              {signal.stopLoss.toLocaleString()}
+   188→   188→            </div>
+   189→   189→          </div>
+   190→   190→        </div>
+   191→   191→
+   192→   192→        {/* Analysis */}
+   193→   193→        <div className="text-xs text-muted-foreground mb-3 leading-relaxed">
+   194→   194→          {signal.analysis}
+   195→   195→        </div>
+   196→   196→
+   197→   197→        {/* Footer */}
+   198→   198→        <div className="flex items-center justify-between">
+   199→   199→          <div className="flex items-center gap-3">
+   200→   200→            <div className="flex items-center gap-1.5">
+   201→   201→              <Zap className="w-3 h-3 text-primary" />
+   202→   202→              <span className="text-xs text-muted-foreground">Confiance</span>
+   203→   203→              <span className="text-xs font-semibold text-foreground">{signal.confidence}%</span>
+   204→   204→            </div>
+   205→   205→          </div>
+   206→   206→          {signal.pnl !== undefined && (
+   207→   207→            <div className={`text-sm font-bold ${signal.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+   208→   208→              {signal.pnl >= 0 ? '+' : ''}{signal.pnl}%
+   209→   209→            </div>
+   210→   210→          )}
+   211→   211→        </div>
+   212→   212→      </div>
+   213→   213→    </motion.div>
+   214→   214→  )
+   215→   215→}
+   216→   216→
+   217→   217→// ===== STATS BAR =====
+   218→   218→function StatsBar({ stats }: { stats: Stats | null }) {
+   219→   219→  if (!stats) return null
+   220→   220→
+   221→   221→  return (
+   222→   222→    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   223→   223→      <Card className="bg-card/60 backdrop-blur-sm border-border">
+   224→   224→        <CardContent className="p-4">
+   225→   225→          <div className="flex items-center gap-2 mb-1">
+   226→   226→            <Activity className="w-4 h-4 text-primary" />
+   227→   227→            <span className="text-xs text-muted-foreground">Signaux Actifs</span>
+   228→   228→          </div>
+   229→   229→          <div className="text-2xl font-bold text-foreground">{stats.activeSignals}</div>
+   230→   230→          <div className="text-xs text-muted-foreground mt-1">{stats.totalSignals} total</div>
+   231→   231→        </CardContent>
+   232→   232→      </Card>
+   233→   233→      <Card className="bg-card/60 backdrop-blur-sm border-border">
+   234→   234→        <CardContent className="p-4">
+   235→   235→          <div className="flex items-center gap-2 mb-1">
+   236→   236→            <BarChart3 className="w-4 h-4 text-profit" />
+   237→   237→            <span className="text-xs text-muted-foreground">Taux de Reussite</span>
+   238→   238→          </div>
+   239→   239→          <div className="text-2xl font-bold text-profit">{stats.winRate}%</div>
+   240→   240→          <Progress value={stats.winRate} className="mt-1 h-1.5 bg-muted" />
+   241→   241→        </CardContent>
+   242→   242→      </Card>
+   243→   243→      <Card className="bg-card/60 backdrop-blur-sm border-border">
+   244→   244→        <CardContent className="p-4">
+   245→   245→          <div className="flex items-center gap-2 mb-1">
+   246→   246→            <TrendingUp className="w-4 h-4 text-primary" />
+   247→   247→            <span className="text-xs text-muted-foreground">PnL Total</span>
+   248→   248→          </div>
+   249→   249→          <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+   250→   250→            {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl}%
+   251→   251→          </div>
+   252→   252→        </CardContent>
+   253→   253→      </Card>
+   254→   254→      <Card className="bg-card/60 backdrop-blur-sm border-border">
+   255→   255→        <CardContent className="p-4">
+   256→   256→          <div className="flex items-center gap-2 mb-1">
+   257→   257→            <Zap className="w-4 h-4 text-yellow-500" />
+   258→   258→            <span className="text-xs text-muted-foreground">Confiance Moy.</span>
+   259→   259→          </div>
+   260→   260→          <div className="text-2xl font-bold text-foreground">{stats.avgConfidence}%</div>
+   261→   261→          <Progress value={stats.avgConfidence} className="mt-1 h-1.5 bg-muted" />
+   262→   262→        </CardContent>
+   263→   263→      </Card>
+   264→   264→    </div>
+   265→   265→  )
+   266→   266→}
+   267→   267→
+   268→   268→// ===== FILTER PANEL =====
+   269→   269→function FilterPanel({ 
+   270→   270→  filters, 
+   271→   271→  setFilters,
+   272→   272→  experts 
+   273→   273→}: { 
+   274→   274→  filters: { assetType: string; direction: string; expert: string; status: string }
+   275→   275→  setFilters: (f: { assetType: string; direction: string; expert: string; status: string }) => void
+   276→   276→  experts: Expert[]
+   277→   277→}) {
+   278→   278→  return (
+   279→   279→    <div className="space-y-4">
+   280→   280→      <div>
+   281→   281→        <h3 className="text-sm font-semibold text-foreground mb-2 flex items-center gap-2">
+   282→   282→          <Filter className="w-4 h-4 text-primary" />
+   283→   283→          Filtres
+   284→   284→        </h3>
+   285→   285→      </div>
+   286→   286→
+   287→   287→      {/* Asset Type */}
+   288→   288→      <div>
+   289→   289→        <label className="text-xs text-muted-foreground mb-1.5 block">Type d&apos;Actif</label>
+   290→   290→        <div className="grid grid-cols-2 gap-2">
+   291→   291→          {Object.entries(assetConfig).map(([key, config]) => (
+   292→   292→            <Button
+   293→   293→              key={key}
+   294→   294→              variant={filters.assetType === key ? 'default' : 'outline'}
+   295→   295→              size="sm"
+   296→   296→              className={`text-xs justify-start ${
+   297→   297→                filters.assetType === key ? 'bg-primary text-primary-foreground' : ''
+   298→   298→              }`}
+   299→   299→              onClick={() => setFilters({ ...filters, assetType: filters.assetType === key ? '' : key })}
+   300→   300→            >
+   301→   301→              {config.icon}
+   302→   302→              <span className="ml-1.5">{config.label}</span>
+   303→   303→            </Button>
+   304→   304→          ))}
+   305→   305→        </div>
+   306→   306→      </div>
+   307→   307→
+   308→   308→      {/* Direction */}
+   309→   309→      <div>
+   310→   310→        <label className="text-xs text-muted-foreground mb-1.5 block">Direction</label>
+   311→   311→        <div className="grid grid-cols-2 gap-2">
+   312→   312→          <Button
+   313→   313→            variant={filters.direction === 'LONG' ? 'default' : 'outline'}
+   314→   314→            size="sm"
+   315→   315→            className={`text-xs ${filters.direction === 'LONG' ? 'bg-profit/20 text-profit border-profit/30' : ''}`}
+   316→   316→            onClick={() => setFilters({ ...filters, direction: filters.direction === 'LONG' ? '' : 'LONG' })}
+   317→   317→          >
+   318→   318→            <TrendingUp className="w-3.5 h-3.5 mr-1.5" />
+   319→   319→            Long
+   320→   320→          </Button>
+   321→   321→          <Button
+   322→   322→            variant={filters.direction === 'SHORT' ? 'default' : 'outline'}
+   323→   323→            size="sm"
+   324→   324→            className={`text-xs ${filters.direction === 'SHORT' ? 'bg-loss/20 text-loss border-loss/30' : ''}`}
+   325→   325→            onClick={() => setFilters({ ...filters, direction: filters.direction === 'SHORT' ? '' : 'SHORT' })}
+   326→   326→          >
+   327→   327→            <TrendingDown className="w-3.5 h-3.5 mr-1.5" />
+   328→   328→            Short
+   329→   329→          </Button>
+   330→   330→        </div>
+   331→   331→      </div>
+   332→   332→
+   333→   333→      {/* Status */}
+   334→   334→      <div>
+   335→   335→        <label className="text-xs text-muted-foreground mb-1.5 block">Statut</label>
+   336→   336→        <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
+   337→   337→          <SelectTrigger className="w-full">
+   338→   338→            <SelectValue placeholder="Tous les statuts" />
+   339→   339→          </SelectTrigger>
+   340→   340→          <SelectContent>
+   341→   341→            <SelectItem value="all">Tous</SelectItem>
+   342→   342→            <SelectItem value="active">Actifs</SelectItem>
+   343→   343→            <SelectItem value="hit_target">Cible atteinte</SelectItem>
+   344→   344→            <SelectItem value="hit_stop">Stop touché</SelectItem>
+   345→   345→          </SelectContent>
+   346→   346→        </Select>
+   347→   347→      </div>
+   348→   348→
+   349→   349→      {/* Expert */}
+   350→   350→      <div>
+   351→   351→        <label className="text-xs text-muted-foreground mb-1.5 block">Expert</label>
+   352→   352→        <Select value={filters.expert} onValueChange={(v) => setFilters({ ...filters, expert: v })}>
+   353→   353→          <SelectTrigger className="w-full">
+   354→   354→            <SelectValue placeholder="Tous les experts" />
+   355→   355→          </SelectTrigger>
+   356→   356→          <SelectContent>
+   357→   357→            <SelectItem value="all">Tous</SelectItem>
+   358→   358→            {experts.map((e) => (
+   359→   359→              <SelectItem key={e.name} value={e.name}>
+   360→   360→                <div className="flex items-center gap-2">
+   361→   361→                  <span className="text-xs font-bold">{e.avatar}</span>
+   362→   362→                  <span>{e.name}</span>
+   363→   363→                  <span className="text-xs text-muted-foreground">{e.winRate}%</span>
+   364→   364→                </div>
+   365→   365→              </SelectItem>
+   366→   366→            ))}
+   367→   367→          </SelectContent>
+   368→   368→        </Select>
+   369→   369→      </div>
+   370→   370→
+   371→   371→      {/* Reset */}
+   372→   372→      <Button
+   373→   373→        variant="outline"
+   374→   374→        size="sm"
+   375→   375→        className="w-full text-xs"
+   376→   376→        onClick={() => setFilters({ assetType: '', direction: '', expert: '', status: 'all' })}
+   377→   377→      >
+   378→   378→        <RefreshCw className="w-3 h-3 mr-1.5" />
+   379→   379→        Reinitialiser les filtres
+   380→   380→      </Button>
+   381→   381→    </div>
+   382→   382→  )
+   383→   383→}
+   384→   384→
+   385→   385→// ===== EXPERT RANKING =====
+   386→   386→function ExpertRanking({ experts }: { experts: Expert[] }) {
+   387→   387→  return (
+   388→   388→    <div className="space-y-3">
+   389→   389→      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+   390→   390→        <Star className="w-4 h-4 text-yellow-500" />
+   391→   391→        Top Experts
+   392→   392→      </h3>
+   393→   393→      <div className="space-y-2">
+   394→   394→        {experts.sort((a, b) => b.winRate - a.winRate).map((expert, idx) => (
+   395→   395→          <div key={expert.name} className="flex items-center gap-3 p-2 rounded-lg bg-card/40 hover:bg-card/70 transition-colors">
+   396→   396→            <div className="text-xs font-bold text-muted-foreground w-4">#{idx + 1}</div>
+   397→   397→            <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center text-xs font-bold text-primary">
+   398→   398→              {expert.avatar}
+   399→   399→            </div>
+   400→   400→            <div className="flex-1 min-w-0">
+   401→   401→              <div className="text-sm font-medium text-foreground truncate">{expert.name}</div>
+   402→   402→              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+   403→   403→                <span className="text-profit">{expert.winRate}%</span>
+   404→   404→                <span>·</span>
+   405→   405→                <span>{expert.totalTrades} trades</span>
+   406→   406→              </div>
+   407→   407→            </div>
+   408→   408→            <div className="flex items-center gap-0.5">
+   409→   409→              <Star className="w-3 h-3 text-yellow-500 fill-yellow-500" />
+   410→   410→              <span className="text-xs text-foreground">{expert.rating}</span>
+   411→   411→            </div>
+   412→   412→          </div>
+   413→   413→        ))}
+   414→   414→      </div>
+   415→   415→    </div>
+   416→   416→  )
+   417→   417→}
+   418→   418→
+   419→   419→// ===== ASSET BREAKDOWN =====
+   420→   420→function AssetBreakdown({ stats }: { stats: Stats | null }) {
+   421→   421→  if (!stats) return null
+   422→   422→  const total = stats.byAsset.crypto + stats.byAsset.forex + stats.byAsset.stocks + stats.byAsset.commodities
+   423→   423→  if (total === 0) return null
+   424→   424→
+   425→   425→  return (
+   426→   426→    <div className="space-y-3">
+   427→   427→      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+   428→   428→        <Globe className="w-4 h-4 text-primary" />
+   429→   429→        Repartition par Actif
+   430→   430→      </h3>
+   431→   431→      <div className="space-y-3">
+   432→   432→        {Object.entries(assetConfig).map(([key, config]) => {
+   433→   433→          const count = stats.byAsset[key as keyof typeof stats.byAsset]
+   434→   434→          const pct = total > 0 ? (count / total) * 100 : 0
+   435→   435→          return (
+   436→   436→            <div key={key}>
+   437→   437→              <div className="flex items-center justify-between mb-1">
+   438→   438→                <span className={`text-xs flex items-center gap-1.5 ${config.color}`}>
+   439→   439→                  {config.icon}
+   440→   440→                  {config.label}
+   441→   441→                </span>
+   442→   442→                <span className="text-xs text-muted-foreground">{count} ({pct.toFixed(0)}%)</span>
+   443→   443→              </div>
+   444→   444→              <Progress value={pct} className="h-2 bg-muted" />
+   445→   445→            </div>
+   446→   446→          )
+   447→   447→        })}
+   448→   448→      </div>
+   449→   449→    </div>
+   450→   450→  )
+   451→   451→}
+   452→   452→
+   453→   453→// ===== MAIN PAGE =====
+   454→   454→export default function TradingDashboard() {
+   455→   455→  const [socket, setSocket] = useState<Socket | null>(null)
+   456→   456→  const [isConnected, setIsConnected] = useState(false)
+   457→   457→  const [signals, setSignals] = useState<TradeSignal[]>([])
+   458→   458→  const [stats, setStats] = useState<Stats | null>(null)
+   459→   459→  const [experts, setExperts] = useState<Expert[]>([])
+   460→   460→  const [soundEnabled, setSoundEnabled] = useState(true)
+   461→   461→  const [filters, setFilters] = useState({ assetType: '', direction: '', expert: '', status: 'all' })
+   462→   462→  const [newSignalIds, setNewSignalIds] = useState<Set<string>>(new Set())
+   463→   463→  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+   464→   464→  const signalsEndRef = useRef<HTMLDivElement>(null)
+   465→   465→
+   466→   466→  // Connect to WebSocket
+   467→   467→  useEffect(() => {
+   468→   468→    const socketInstance = io('/?XTransformPort=3003', {
+   469→   469→      transports: ['websocket', 'polling'],
+   470→   470→      forceNew: true,
+   471→   471→      reconnection: true,
+   472→   472→      reconnectionAttempts: 10,
+   473→   473→      reconnectionDelay: 2000,
+   474→   474→      timeout: 10000,
+   475→   475→    })
+   476→   476→
+   477→   477→    setSocket(socketInstance)
+   478→   478→
+   479→   479→    socketInstance.on('connect', () => {
+   480→   480→      console.log('Connected to trading signals server')
+   481→   481→      setIsConnected(true)
+   482→   482→    })
+   483→   483→
+   484→   484→    socketInstance.on('disconnect', () => {
+   485→   485→      setIsConnected(false)
+   486→   486→    })
+   487→   487→
+   488→   488→    socketInstance.on('signals-history', (data: TradeSignal[]) => {
+   489→   489→      setSignals(data)
+   490→   490→    })
+   491→   491→
+   492→   492→    socketInstance.on('new-signal', (signal: TradeSignal) => {
+   493→   493→      setSignals(prev => [signal, ...prev])
+   494→   494→      setNewSignalIds(prev => new Set(prev).add(signal.id))
+   495→   495→      if (soundEnabled) {
+   496→   496→        playAlertSound()
+   497→   497→      }
+   498→   498→      // Remove "new" flag after animation
+   499→   499→      setTimeout(() => {
+   500→   500→        setNewSignalIds(prev => {
+   501→   501→          const next = new Set(prev)
+   502→   502→          next.delete(signal.id)
+   503→   503→          return next
+   504→   504→        })
+   505→   505→      }, 2000)
+   506→   506→    })
+   507→   507→
+   508→   508→    socketInstance.on('signal-updated', (updated: TradeSignal) => {
+   509→   509→      setSignals(prev => prev.map(s => s.id === updated.id ? updated : s))
+   510→   510→    })
+   511→   511→
+   512→   512→    socketInstance.on('stats', (data: Stats) => {
+   513→   513→      setStats(data)
+   514→   514→    })
+   515→   515→
+   516→   516→    socketInstance.on('experts', (data: Expert[]) => {
+   517→   517→      setExperts(data)
+   518→   518→    })
+   519→   519→
+   520→   520→    return () => {
+   521→   521→      socketInstance.disconnect()
+   522→   522→    }
+   523→   523→  }, [soundEnabled])
+   524→   524→
+   525→   525→  // Filter signals
+   526→   526→  const filteredSignals = signals.filter(s => {
+   527→   527→    if (filters.assetType && s.assetType !== filters.assetType) return false
+   528→   528→    if (filters.direction && s.direction !== filters.direction) return false
+   529→   529→    if (filters.expert && filters.expert !== 'all' && s.expertName !== filters.expert) return false
+   530→   530→    if (filters.status && filters.status !== 'all' && s.status !== filters.status) return false
+   531→   531→    return true
+   532→   532→  })
+   533→   533→
+   534→   534→  // Sidebar content (shared between desktop and mobile)
+   535→   535→  const sidebarContent = (
+   536→   536→    <div className="space-y-6">
+   537→   537→      <FilterPanel filters={filters} setFilters={setFilters} experts={experts} />
+   538→   538→      <Separator />
+   539→   539→      <ExpertRanking experts={experts} />
+   540→   540→      <Separator />
+   541→   541→      <AssetBreakdown stats={stats} />
+   542→   542→    </div>
+   543→   543→  )
+   544→   544→
+   545→   545→  return (
+   546→   546→    <div className="min-h-screen bg-background flex flex-col">
+   547→   547→      {/* Header */}
+   548→   548→      <header className="sticky top-0 z-50 glass border-b border-border">
+   549→   549→        <div className="max-w-[1600px] mx-auto px-4 py-3">
+   550→   550→          <div className="flex items-center justify-between">
+   551→   551→            <div className="flex items-center gap-3">
+   552→   552→              {/* Mobile menu toggle */}
+   553→   553→              <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+   554→   554→                <SheetTrigger asChild>
+   555→   555→                  <Button variant="ghost" size="icon" className="md:hidden">
+   556→   556→                                    <Menu className="w-5 h-5" />
+   557→   557→                                  </Button>
+   558→   558→                                </SheetTrigger>
+   559→   559→                                <SheetContent side="left" className="w-80 bg-card border-border p-4 custom-scrollbar overflow-y-auto">
+   560→   560→                                  {sidebarContent}
+   561→   561→                                </SheetContent>
+   562→   562→                              </Sheet>
+   563→   563→              <div className="flex items-center gap-2.5">
+   564→   564→                <div className="w-9 h-9 rounded-xl bg-primary/20 flex items-center justify-center">
+   565→   565→                  <Activity className="w-5 h-5 text-primary" />
+   566→   566→                </div>
+   567→   567→                <div>
+   568→   568→                  <h1 className="text-lg font-bold gradient-text">TradeFlow Pro</h1>
+   569→   569→                  <p className="text-xs text-muted-foreground">Signaux d&apos;Experts en Direct</p>
+   570→   570→                </div>
+   571→   571→              </div>
+   572→   572→            </div>
+   573→   573→
+   574→   574→            <div className="flex items-center gap-3">
+   575→   575→              {/* Connection status */}
+   576→   576→              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${
+   577→   577→                isConnected 
+   578→   578→                  ? 'bg-profit/10 text-profit' 
+   579→   579→                  : 'bg-loss/10 text-loss'
+   580→   580→              }`}>
+   581→   581→                {isConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+   582→   582→                <span className="hidden sm:inline">{isConnected ? 'Connecté' : 'Déconnecté'}</span>
+   583→   583→                {isConnected && <span className="w-1.5 h-1.5 rounded-full bg-profit live-pulse" />}
+   584→   584→              </div>
+   585→   585→
+   586→   586→              {/* Sound toggle */}
+   587→   587→              <Toggle
+   588→   588→                pressed={soundEnabled}
+   589→   589→                onPressedChange={setSoundEnabled}
+   590→   590→                aria-label="Toggle sound alerts"
+   591→   591→                className="data-[state=on]:bg-primary/15 data-[state=on]:text-primary"
+   592→   592→              >
+   593→   593→                {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+   594→   594→              </Toggle>
+   595→   595→
+   596→   596→              {/* Signal count */}
+   597→   597→              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card border border-border text-xs">
+   598→   598→                <Zap className="w-3.5 h-3.5 text-yellow-500" />
+   599→   599→                <span className="font-semibold">{filteredSignals.length}</span>
+   600→   600→                <span className="text-muted-foreground">signaux</span>
+   601→   601→              </div>
+   602→   602→            </div>
+   603→   603→          </div>
+   604→   604→        </div>
+   605→   605→      </header>
+   606→   606→
+   607→   607→      {/* Stats Bar */}
+   608→   608→      <div className="border-b border-border bg-card/30">
+   609→   609→        <div className="max-w-[1600px] mx-auto px-4 py-3">
+   610→   610→          <StatsBar stats={stats} />
+   611→   611→        </div>
+   612→   612→      </div>
+   613→   613→
+   614→   614→      {/* Main Content */}
+   615→   615→      <div className="flex-1 flex">
+   616→   616→        <div className="max-w-[1600px] mx-auto w-full flex gap-0 lg:gap-6 p-4">
+   617→   617→          {/* Desktop Sidebar */}
+   618→   618→          <aside className="hidden md:block w-72 shrink-0">
+   619→   619→            <div className="sticky top-[140px] max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar pr-2 space-y-6">
+   620→   620→              {sidebarContent}
+   621→   621→            </div>
+   622→   622→          </aside>
+   623→   623→
+   624→   624→          {/* Signal Feed */}
+   625→   625→          <main className="flex-1 min-w-0">
+   626→   626→            {/* Feed header */}
+   627→   627→            <div className="flex items-center justify-between mb-4">
+   628→   628→              <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
+   629→   629→                <Clock className="w-4 h-4 text-primary" />
+   630→   630→                Flux en Direct
+   631→   631→                {isConnected && <span className="w-2 h-2 rounded-full bg-profit live-pulse" />}
+   632→   632→              </h2>
+   633→   633→              <div className="flex items-center gap-2">
+   634→   634→                {/* Quick filter badges */}
+   635→   635→                {Object.entries(assetConfig).map(([key, config]) => {
+   636→   636→                  const count = signals.filter(s => s.assetType === key).length
+   637→   637→                  return (
+   638→   638→                    <Button
+   639→   639→                      key={key}
+   640→   640→                      variant={filters.assetType === key ? 'default' : 'outline'}
+   641→   641→                      size="sm"
+   642→   642→                      className={`text-xs h-7 ${filters.assetType === key ? 'bg-primary text-primary-foreground' : ''}`}
+   643→   643→                      onClick={() => setFilters({ ...filters, assetType: filters.assetType === key ? '' : key })}
+   644→   644→                    >
+   645→   645→                      {config.icon}
+   646→   646→                      <span className="ml-1 hidden sm:inline">{config.label}</span>
+   647→   647→                      <span className="ml-1 text-[10px] opacity-70">{count}</span>
+   648→   648→                    </Button>
+   649→   649→                  )
+   650→   650→                })}
+   651→   651→              </div>
+   652→   652→            </div>
+   653→   653→
+   654→   654→            {/* Signals list */}
+   655→   655→            <ScrollArea className="h-[calc(100vh-260px)]">
+   656→   656→              <div className="space-y-3 pr-2">
+   657→   657→                <AnimatePresence mode="popLayout">
+   658→   658→                  {filteredSignals.length === 0 ? (
+   659→   659→                    <div className="text-center py-16">
+   660→   660→                      <Activity className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+   661→   661→                      <p className="text-muted-foreground text-sm">Aucun signal trouvé</p>
+   662→   662→                      <p className="text-muted-foreground/60 text-xs mt-1">Les signaux des experts apparaîtront ici en temps réel</p>
+   663→   663→                    </div>
+   664→   664→                  ) : (
+   665→   665→                    filteredSignals.map((signal) => (
+   666→   666→                      <SignalCard
+   667→   667→                        key={signal.id}
+   668→   668→                        signal={signal}
+   669→   669→                        isNew={newSignalIds.has(signal.id)}
+   670→   670→                      />
+   671→   671→                    ))
+   672→   672→                  )}
+   673→   673→                </AnimatePresence>
+   674→   674→              </div>
+   675→   675→            </ScrollArea>
+   676→   676→          </main>
+   677→   677→        </div>
+   678→   678→      </div>
+   679→   679→
+   680→   680→      {/* Footer */}
+   681→   681→      <footer className="border-t border-border bg-card/30 py-3">
+   682→   682→        <div className="max-w-[1600px] mx-auto px-4 flex items-center justify-between">
+   683→   683→          <div className="text-xs text-muted-foreground flex items-center gap-2">
+   684→   684→            <Activity className="w-3.5 h-3.5 text-primary" />
+   685→   685→            TradeFlow Pro — Signaux d&apos;experts en temps réel
+   686→   686→          </div>
+   687→   687→          <div className="text-xs text-muted-foreground">
+   688→   688→            {isConnected ? (
+   689→   689→              <span className="flex items-center gap-1.5 text-profit">
+   690→   690→                <span className="w-1.5 h-1.5 rounded-full bg-profit live-pulse" />
+   691→   691→                Streaming en direct
+   692→   692→              </span>
+   693→   693→            ) : (
+   694→   694→              <span className="flex items-center gap-1.5 text-loss">
+   695→   695→                <WifiOff className="w-3 h-3" />
+   696→   696→                Hors ligne
+   697→   697→              </span>
+   698→   698→            )}
+   699→   699→          </div>
+   700→   700→        </div>
+   701→   701→      </footer>
+   702→   702→    </div>
+   703→   703→  )
+   704→   704→}
+   705→   705→
