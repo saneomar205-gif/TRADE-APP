@@ -116,7 +116,6 @@ function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) 
       } bg-card/80 backdrop-blur-sm`}
     >
       <div className="p-4">
-        {/* Header row */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold ${
@@ -160,7 +159,6 @@ function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) 
           </div>
         </div>
 
-        {/* Symbol and price */}
         <div className="flex items-center justify-between mb-3">
           <div>
             <span className="text-lg font-bold text-foreground">{signal.symbol}</span>
@@ -171,7 +169,6 @@ function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) 
           </div>
         </div>
 
-        {/* Target and Stop */}
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div className={`rounded-lg p-2 ${isLong ? 'bg-profit/5' : 'bg-loss/5'}`}>
             <div className="text-xs text-muted-foreground mb-0.5">Objectif</div>
@@ -187,12 +184,10 @@ function SignalCard({ signal, isNew }: { signal: TradeSignal; isNew: boolean }) 
           </div>
         </div>
 
-        {/* Analysis */}
         <div className="text-xs text-muted-foreground mb-3 leading-relaxed">
           {signal.analysis}
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
@@ -282,7 +277,6 @@ function FilterPanel({
         </h3>
       </div>
 
-      {/* Asset Type */}
       <div>
         <label className="text-xs text-muted-foreground mb-1.5 block">Type d&apos;Actif</label>
         <div className="grid grid-cols-2 gap-2">
@@ -303,7 +297,6 @@ function FilterPanel({
         </div>
       </div>
 
-      {/* Direction */}
       <div>
         <label className="text-xs text-muted-foreground mb-1.5 block">Direction</label>
         <div className="grid grid-cols-2 gap-2">
@@ -328,7 +321,6 @@ function FilterPanel({
         </div>
       </div>
 
-      {/* Status */}
       <div>
         <label className="text-xs text-muted-foreground mb-1.5 block">Statut</label>
         <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
@@ -344,7 +336,6 @@ function FilterPanel({
         </Select>
       </div>
 
-      {/* Expert */}
       <div>
         <label className="text-xs text-muted-foreground mb-1.5 block">Expert</label>
         <Select value={filters.expert} onValueChange={(v) => setFilters({ ...filters, expert: v })}>
@@ -366,7 +357,6 @@ function FilterPanel({
         </Select>
       </div>
 
-      {/* Reset */}
       <Button
         variant="outline"
         size="sm"
@@ -458,16 +448,30 @@ export default function TradingDashboard() {
   const [filters, setFilters] = useState({ assetType: '', direction: '', expert: '', status: 'all' })
   const [newSignalIds, setNewSignalIds] = useState<Set<string>>(new Set())
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const lastFetchRef = useRef<string>('')
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const signalsRef = useRef<TradeSignal[]>([])
+  const soundRef = useRef(true)
+
+  // Keep refs in sync
+  useEffect(() => {
+    signalsRef.current = signals
+  }, [signals])
+
+  useEffect(() => {
+    soundRef.current = soundEnabled
+  }, [soundEnabled])
+
+  // Mark as mounted (client-only)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   // Fetch signals from API
   const fetchSignals = useCallback(async () => {
     try {
       const params = new URLSearchParams()
-      if (lastFetchRef.current) {
-        params.set('after', lastFetchRef.current)
-      }
       if (filters.assetType) params.set('assetType', filters.assetType)
       if (filters.direction) params.set('direction', filters.direction)
       if (filters.expert && filters.expert !== 'all') params.set('expert', filters.expert)
@@ -480,13 +484,12 @@ export default function TradingDashboard() {
       setIsConnected(true)
 
       if (data.signals && data.signals.length > 0) {
-        const newIds = data.signals
-          .filter((s: TradeSignal) => !signals.find(existing => existing.id === s.id))
-          .map((s: TradeSignal) => s.id)
+        const prevIds = new Set(signalsRef.current.map(s => s.id))
+        const newSignals = data.signals.filter((s: TradeSignal) => !prevIds.has(s.id))
+        const newIds = newSignals.map((s: TradeSignal) => s.id)
 
         if (newIds.length > 0 && lastFetchRef.current) {
-          // Only play sound for truly new signals (not initial load)
-          if (soundEnabled) playAlertSound()
+          if (soundRef.current) playAlertSound()
           setNewSignalIds(prev => {
             const next = new Set(prev)
             newIds.forEach((id: string) => next.add(id))
@@ -514,7 +517,7 @@ export default function TradingDashboard() {
     } catch {
       setIsConnected(false)
     }
-  }, [filters, signals, soundEnabled])
+  }, [filters.assetType, filters.direction, filters.expert, filters.status])
 
   // Fetch stats
   const fetchStats = useCallback(async () => {
@@ -527,7 +530,7 @@ export default function TradingDashboard() {
     } catch {}
   }, [])
 
-  // Fetch experts
+  // Fetch experts (once)
   useEffect(() => {
     fetch('/api/experts')
       .then(res => res.json())
@@ -537,10 +540,11 @@ export default function TradingDashboard() {
 
   // Initial load and polling
   useEffect(() => {
+    if (!mounted) return
+
     fetchSignals()
     fetchStats()
 
-    // Poll every 5 seconds
     intervalRef.current = setInterval(() => {
       fetchSignals()
       fetchStats()
@@ -549,16 +553,18 @@ export default function TradingDashboard() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [fetchSignals, fetchStats])
+  }, [mounted, fetchSignals, fetchStats])
 
   // Re-fetch when filters change
   useEffect(() => {
+    if (!mounted) return
     lastFetchRef.current = ''
     setSignals([])
+    signalsRef.current = []
     fetchSignals()
-  }, [filters, fetchSignals])
+  }, [filters, mounted, fetchSignals])
 
-  // Filter signals client-side as well
+  // Filter signals client-side
   const filteredSignals = signals.filter(s => {
     if (filters.assetType && s.assetType !== filters.assetType) return false
     if (filters.direction && s.direction !== filters.direction) return false
@@ -567,7 +573,7 @@ export default function TradingDashboard() {
     return true
   })
 
-  // Sidebar content (shared between desktop and mobile)
+  // Sidebar content
   const sidebarContent = (
     <div className="space-y-6">
       <FilterPanel filters={filters} setFilters={setFilters} experts={experts} />
@@ -578,6 +584,18 @@ export default function TradingDashboard() {
     </div>
   )
 
+  // Don't render until client-side mounted
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex items-center gap-3">
+          <Activity className="w-8 h-8 text-primary animate-spin" />
+          <span className="text-lg text-muted-foreground">Chargement de TradeFlow Pro...</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -585,7 +603,6 @@ export default function TradingDashboard() {
         <div className="max-w-[1600px] mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* Mobile menu toggle */}
               <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
                 <SheetTrigger asChild>
                   <Button variant="ghost" size="icon" className="md:hidden">
@@ -608,7 +625,6 @@ export default function TradingDashboard() {
             </div>
 
             <div className="flex items-center gap-3">
-              {/* Connection status */}
               <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${
                 isConnected 
                   ? 'bg-profit/10 text-profit' 
@@ -619,7 +635,6 @@ export default function TradingDashboard() {
                 {isConnected && <span className="w-1.5 h-1.5 rounded-full bg-profit live-pulse" />}
               </div>
 
-              {/* Sound toggle */}
               <Toggle
                 pressed={soundEnabled}
                 onPressedChange={setSoundEnabled}
@@ -629,7 +644,6 @@ export default function TradingDashboard() {
                 {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
               </Toggle>
 
-              {/* Signal count */}
               <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card border border-border text-xs">
                 <Zap className="w-3.5 h-3.5 text-yellow-500" />
                 <span className="font-semibold">{filteredSignals.length}</span>
@@ -650,16 +664,13 @@ export default function TradingDashboard() {
       {/* Main Content */}
       <div className="flex-1 flex">
         <div className="max-w-[1600px] mx-auto w-full flex gap-0 lg:gap-6 p-4">
-          {/* Desktop Sidebar */}
           <aside className="hidden md:block w-72 shrink-0">
             <div className="sticky top-[140px] max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar pr-2 space-y-6">
               {sidebarContent}
             </div>
           </aside>
 
-          {/* Signal Feed */}
           <main className="flex-1 min-w-0">
-            {/* Feed header */}
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
                 <Clock className="w-4 h-4 text-primary" />
@@ -667,7 +678,6 @@ export default function TradingDashboard() {
                 {isConnected && <span className="w-2 h-2 rounded-full bg-profit live-pulse" />}
               </h2>
               <div className="flex items-center gap-2">
-                {/* Quick filter badges */}
                 {Object.entries(assetConfig).map(([key, config]) => {
                   const count = signals.filter(s => s.assetType === key).length
                   return (
@@ -687,7 +697,6 @@ export default function TradingDashboard() {
               </div>
             </div>
 
-            {/* Signals list */}
             <ScrollArea className="h-[calc(100vh-260px)]">
               <div className="space-y-3 pr-2">
                 <AnimatePresence mode="popLayout">
